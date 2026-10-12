@@ -1,0 +1,8 @@
+Package: com.muratkurt.ccevent
+Name: ccevent
+Version: 1.0.0
+Architecture: iphoneos-arm64e
+Description: Sends Camera Control events in a vphone guest (used by VPhone Buttons).
+Maintainer: Murat Kurt
+Author: Murat Kurt
+Section: Development

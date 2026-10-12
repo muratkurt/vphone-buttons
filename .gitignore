@@ -1,0 +1,4 @@
+build/
+ccevent/.theos/
+ccevent/packages/
+.DS_Store

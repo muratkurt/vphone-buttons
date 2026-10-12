@@ -1,0 +1,19 @@
+name: Bug report
+description: Something is not working
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did and what you got instead.
+    validations:
+      required: true
+
+  - type: input
+    id: setup
+    attributes:
+      label: Setup (optional)
+      description: Helps a lot, but leave it blank if you are not sure.
+      placeholder: macOS 26 · vphone-cli 2.9.2 · iOS 27.0.1 guest · RootHide · VPhone Buttons 1.0.0
+    validations:
+      required: false
