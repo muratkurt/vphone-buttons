@@ -37,7 +37,7 @@ Buttons go through the machine's control socket (`input.button`, HID usages). Fo
 
 ## Bugs
 
-Open an [issue](../../issues/new/choose) with your macOS, vphone-cli and guest iOS versions.
+Open an [issue](../../issues/new) with your macOS, vphone-cli and guest iOS versions.
 
 ## Credits
 
