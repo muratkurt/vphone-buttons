@@ -54,6 +54,32 @@ struct Guest {
 
     func home() throws { try socket.rpc("input.button", ["name": "home"]) }
 
+    /// Home twice: the App Switcher.
+    func appSwitcher() throws {
+        try home()
+        Thread.sleep(forTimeInterval: 0.12)
+        try home()
+    }
+
+    /// Side button (Consumer Power): a press locks or wakes, a hold calls Siri.
+    func sideButton(hold: Bool) throws {
+        if hold {
+            try hid(page: 12, usage: 48, down: true)
+            Thread.sleep(forTimeInterval: 1.5)
+            try hid(page: 12, usage: 48, down: false)
+        } else {
+            _ = try socket.send(["t": "key", "name": "power", "screen": false])
+        }
+    }
+
+    /// Wakes the screen and swipes up from the bottom edge (a guest without a passcode opens).
+    func unlock() throws {
+        try hid(page: 12, usage: 64)
+        Thread.sleep(forTimeInterval: 0.8)
+        try socket.rpc("input.swipe", ["x1": 0.5, "y1": 0.97, "x2": 0.5, "y2": 0.4, "duration": 0.3])
+        Thread.sleep(forTimeInterval: 0.8)
+    }
+
     /// Full-resolution screenshot written by the VM process on the Mac.
     func screenshot(to folder: URL) throws -> URL {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -61,6 +87,11 @@ struct Guest {
         let file = folder.appendingPathComponent("vphone-\(stamp).png")
         _ = try socket.send(["t": "screenshot", "path": file.path, "screen": false])
         return file
+    }
+
+    /// A jailbreak bootstrap (RootHide or rootless) is installed.
+    func jailbroken() -> Bool {
+        (try? socket.rpc("bootstrap.inspect"))?["installed"] as? Bool == true
     }
 
     // MARK: Camera Control through ccevent

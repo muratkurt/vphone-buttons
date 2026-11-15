@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct Scenario: Identifiable {
     enum Kind { case plain, cameraControl }
@@ -48,6 +49,10 @@ let sections: [(LocalizedStringKey, [Scenario])] = [
         plain("volume-down", "Volume down", "speaker.minus") { try $0.hid(page: 12, usage: 234) },
         plain("play-pause", "Play / Pause", "playpause") { try $0.hid(page: 12, usage: 205) },
         plain("home", "Home", "house") { try $0.home() },
+        plain("app-switcher", "App Switcher", "square.stack") { try $0.appSwitcher() },
+        plain("side", "Side button", "power") { try $0.sideButton(hold: false) },
+        plain("siri", "Siri", "mic") { try $0.sideButton(hold: true) },
+        plain("unlock", "Unlock", "lock.open") { try $0.unlock() },
         Scenario(id: "screenshot", title: "Screenshot", symbol: "camera.viewfinder", kind: .plain) { guest, _ in
             let file = try guest.screenshot(to: AppSettings.screenshotFolder)
             return String(format: String(localized: "Saved %@"), file.lastPathComponent)
@@ -58,6 +63,12 @@ let sections: [(LocalizedStringKey, [Scenario])] = [
 enum AppSettings {
     static let libraryKey = "libraryFolder"
     static let screenshotKey = "screenshotFolder"
+    static let installFileKey = "installFile"
+    static let installModeKey = "installMode"
+    static let installKeychainKey = "installKeychain"
+    static let installLaunchKey = "installLaunch"
+    static let installScreenshotKey = "installScreenshot"
+    static let installPreferencesKey = "installPreferences"
     static var defaultLibrary: String { NSString(string: "~/.vphone/machines").expandingTildeInPath }
     static var defaultScreenshots: String {
         FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.path ?? NSHomeDirectory()
@@ -75,6 +86,7 @@ final class Controller: ObservableObject {
     @Published var machines: [Machine] = []
     @Published var selected: Machine?
     @Published var cameraControl: CameraControlSupport = .unknown
+    @Published var jailbroken = false
     @Published var running: Set<String> = []
     @Published var log: [String] = []
 
@@ -96,8 +108,12 @@ final class Controller: ObservableObject {
         guard let machine = selected else { cameraControl = .unknown; return }
         cameraControl = .unknown
         queue.async {
-            let support = Guest(machine).cameraControlSupport()
-            DispatchQueue.main.async { if self.selected == machine { self.cameraControl = support } }
+            let guest = Guest(machine)
+            let support = guest.cameraControlSupport()
+            let jailbroken = guest.jailbroken()
+            DispatchQueue.main.async {
+                if self.selected == machine { self.cameraControl = support; self.jailbroken = jailbroken }
+            }
         }
     }
 
@@ -121,11 +137,38 @@ final class Controller: ObservableObject {
             }
             DispatchQueue.main.async {
                 self.running.remove(scenario.id)
-                let time = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-                self.log.insert("\(time)  \(line)", at: 0)
-                if self.log.count > 50 { self.log.removeLast() }
+                self.add(line)
             }
         }
+    }
+
+    func install(_ file: URL, _ options: InstallOptions) {
+        guard let machine = selected else { return }
+        running.insert("install")
+        let started = Date()
+        queue.async {
+            let line: String
+            do {
+                let installer = Installer(guest: Guest(machine)) { note in DispatchQueue.main.async { self.add(note) } }
+                let result = try installer.install(file, options)
+                let seconds = String(format: "%.1f", Date().timeIntervalSince(started))
+                line = String(format: String(localized: "Installed %@ as %@ (%@ s)"), result.bundleID,
+                              String(localized: String.LocalizationValue(result.mode.title)), seconds)
+                    + (result.screenshot.map { " · " + String(format: String(localized: "Saved %@"), $0.lastPathComponent) } ?? "")
+            } catch {
+                line = String(format: String(localized: "%@ — failed: %@"), String(localized: "Install"), error.localizedDescription)
+            }
+            DispatchQueue.main.async {
+                self.running.remove("install")
+                self.add(line)
+            }
+        }
+    }
+
+    private func add(_ line: String) {
+        let time = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+        log.insert("\(time)  \(line)", at: 0)
+        if log.count > 50 { log.removeLast() }
     }
 }
 
@@ -136,6 +179,7 @@ struct MainView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+            ScrollView { VStack(alignment: .leading, spacing: 14) {
             ForEach(sections, id: \.1.first!.id) { title, scenarios in
                 Text(title).font(.headline).foregroundStyle(.secondary)
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
@@ -162,6 +206,8 @@ struct MainView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            InstallSection(controller: controller)
+            }.padding(.trailing, 4) }
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
@@ -174,7 +220,7 @@ struct MainView: View {
             .frame(height: 100)
         }
         .padding(18)
-        .frame(minWidth: 600, minHeight: 640)
+        .frame(minWidth: 640, idealWidth: 900, minHeight: 600, idealHeight: 900)
         .onAppear { controller.refresh() }
     }
 
@@ -195,6 +241,107 @@ struct MainView: View {
         guard controller.selected != nil, !controller.running.contains(scenario.id) else { return false }
         if scenario.kind == .cameraControl, case .ready = controller.cameraControl { return true }
         return scenario.kind == .plain
+    }
+}
+
+/// Install an .ipa, .tipa or .app (choose it, or drop it on the window).
+struct InstallSection: View {
+    @ObservedObject var controller: Controller
+    @AppStorage(AppSettings.installFileKey) private var path = ""
+    @AppStorage(AppSettings.installModeKey) private var mode = InstallMode.automatic.rawValue
+    @AppStorage(AppSettings.installKeychainKey) private var keychain = true
+    @AppStorage(AppSettings.installLaunchKey) private var launch = true
+    @AppStorage(AppSettings.installScreenshotKey) private var screenshot = false
+    @AppStorage(AppSettings.installPreferencesKey) private var preferences = ""
+    @State private var dropping = false
+
+    private var chosen: InstallMode { InstallMode(rawValue: mode) ?? .automatic }
+    private var file: URL? { path.isEmpty ? nil : URL(fileURLWithPath: path) }
+    private static let types = ["ipa", "tipa", "app"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Install App").font(.headline).foregroundStyle(.secondary)
+            HStack {
+                Image(systemName: "shippingbox").foregroundStyle(.secondary)
+                Text(file?.lastPathComponent ?? String(localized: "Drop an .ipa, .tipa or .app here, or choose one."))
+                    .lineLimit(1).truncationMode(.middle)
+                    .foregroundStyle(file == nil ? .secondary : .primary)
+                    .help(path)
+                Spacer()
+                Button("Choose…") { choose() }
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).strokeBorder(dropping ? Color.accentColor : Color.secondary.opacity(0.35),
+                                                                      style: StrokeStyle(lineWidth: 1, dash: dropping ? [] : [4])))
+            .onDrop(of: [.fileURL], isTargeted: $dropping) { providers in
+                _ = providers.first?.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url, Self.types.contains(url.pathExtension.lowercased()) else { return }
+                    DispatchQueue.main.async { path = url.path }
+                }
+                return true
+            }
+            HStack(spacing: 14) {
+                Picker("Install as", selection: $mode) {
+                    ForEach(InstallMode.allCases) { item in
+                        Text(LocalizedStringKey(item.title)).tag(item.rawValue)
+                            .disabled(item == .jailbreak && !controller.jailbroken)
+                    }
+                }
+                .fixedSize()
+                Toggle("Keychain access", isOn: $keychain)
+                Toggle("Open after install", isOn: $launch)
+                Toggle("Screenshot", isOn: $screenshot).disabled(!launch)
+            }
+            Text(LocalizedStringKey(hint)).font(.caption).foregroundStyle(.secondary)
+            TextField("Preferences (key=value, one per line)", text: $preferences, axis: .vertical)
+                .lineLimit(1...4)
+                .font(.system(.body, design: .monospaced))
+            HStack {
+                Spacer()
+                Button {
+                    guard let file else { return }
+                    var options = InstallOptions()
+                    options.mode = chosen
+                    options.keychain = keychain
+                    options.launch = launch
+                    options.screenshot = launch && screenshot
+                    options.preferences = preferences
+                    controller.install(file, options)
+                } label: {
+                    HStack {
+                        if controller.running.contains("install") { ProgressView().controlSize(.small) }
+                        Text("Install")
+                    }
+                    .frame(minWidth: 90)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(file == nil || controller.selected == nil || controller.running.contains("install")
+                          || (chosen == .jailbreak && !controller.jailbroken))
+            }
+        }
+    }
+
+    private var hint: String {
+        switch chosen {
+        case .automatic: "Automatic: a .tipa goes in as TrollStore, anything else as App."
+        case .app: "App: a normal app in its own container."
+        case .trollStore: "TrollStore: unsandboxed, with the entitlements it declares."
+        case .jailbreak: controller.jailbroken
+            ? "Jailbreak: into the jailbreak's Applications folder (RootHide or rootless), registered as a system app."
+            : "Jailbreak install needs a jailbroken guest"
+        }
+    }
+
+    private func choose() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.treatsFilePackagesAsDirectories = false
+        panel.allowedContentTypes = Self.types.compactMap { UTType(filenameExtension: $0) } + [.applicationBundle]
+        if let file { panel.directoryURL = file.deletingLastPathComponent() }
+        if panel.runModal() == .OK, let url = panel.url { path = url.path }
     }
 }
 
@@ -230,7 +377,7 @@ struct SettingsView: View {
 @main
 struct VPhoneButtonsApp: App {
     var body: some Scene {
-        WindowGroup { MainView() }.windowResizability(.contentSize)
+        WindowGroup { MainView() }.windowResizability(.contentMinSize)
         Settings { SettingsView() }
     }
 }
